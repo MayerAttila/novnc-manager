@@ -65,6 +65,13 @@ function withProtocol(url: string) {
 }
 
 export function getGatewayOrigin() {
+  if (
+    typeof window !== "undefined" &&
+    !process.env.NEXT_PUBLIC_NOVNC_GATEWAY_ORIGIN
+  ) {
+    return window.location.origin;
+  }
+
   return withProtocol(DEFAULT_GATEWAY_ORIGIN);
 }
 

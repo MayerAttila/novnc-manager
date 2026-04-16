@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: novnc-manager
     environment:
+      HOSTNAME: 127.0.0.1
       PORT: "6903"
       NOVNC_ADMIN_ORIGIN: http://127.0.0.1:6902
     network_mode: host

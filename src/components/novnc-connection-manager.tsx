@@ -274,7 +274,7 @@ export function NoVncConnectionManager() {
 
   function openProfile(profile: ConnectionProfile) {
     markOpened(profile.token);
-    window.open(buildLaunchUrl(profile), "_blank", "noopener,noreferrer");
+    window.location.assign(buildLaunchUrl(profile));
   }
 
   function exportProfiles() {
