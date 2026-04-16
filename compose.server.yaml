@@ -5,9 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: novnc-manager
     environment:
-      NOVNC_ADMIN_ORIGIN: http://host.docker.internal:6902
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "6903:3000"
+      PORT: "6903"
+      NOVNC_ADMIN_ORIGIN: http://127.0.0.1:6902
+    network_mode: host
     restart: unless-stopped

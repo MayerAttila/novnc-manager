@@ -1,34 +1,58 @@
 export type ConnectionProfile = {
   id: string;
+  token: string;
   name: string;
   host: string;
   port: string;
-  password: string;
   notes: string;
-  updatedAt: string;
   lastOpenedAt?: string;
 };
 
-export const STORAGE_KEY = "novnc-manager.connections.v3";
+export type DevicePayload = {
+  name: string;
+  host: string;
+  port: string;
+  note: string;
+  token?: string;
+};
 
-export const DEFAULT_PROFILES: ConnectionProfile[] = [
-  {
-    id: "machine-62",
-    name: "Machine 62",
-    host: "192.168.0.104:6901",
-    port: "6901",
-    password: "",
-    notes: "Current noVNC gateway.",
-    updatedAt: "2026-04-15T00:00:00.000Z",
-  },
-];
+export const LAST_OPENED_STORAGE_KEY = "novnc-manager.last-opened.v1";
 
-export function createProfileId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
+export const DEFAULT_GATEWAY_ORIGIN =
+  process.env.NEXT_PUBLIC_NOVNC_GATEWAY_ORIGIN || "http://192.168.0.104:6901";
 
-  return `profile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+export function toConnectionProfile(input: {
+  name: string;
+  token: string;
+  target: string;
+  note?: string;
+}): ConnectionProfile {
+  const [host = "", port = "5900"] = String(input.target || "").split(":");
+
+  return {
+    id: input.token,
+    token: input.token,
+    name: input.name,
+    host,
+    port,
+    notes: input.note || "",
+  };
+}
+
+export function createDevicePayload(input: {
+  name: string;
+  host: string;
+  port: string;
+  notes: string;
+  token?: string;
+}): DevicePayload {
+  return {
+    name: input.name.trim(),
+    host: input.host.trim(),
+    port: input.port.trim(),
+    note: input.notes.trim(),
+    ...(input.token ? { token: input.token.trim() } : {}),
+  };
 }
 
 function withProtocol(url: string) {
@@ -40,36 +64,27 @@ function withProtocol(url: string) {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
-function sanitizeGatewayHost(input: string) {
-  const value = input.trim();
-  if (!value) {
-    return value;
-  }
-
-  return value.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+export function getGatewayOrigin() {
+  return withProtocol(DEFAULT_GATEWAY_ORIGIN);
 }
 
 export function buildLaunchUrl(profile: ConnectionProfile) {
-  const base = withProtocol(sanitizeGatewayHost(profile.host));
-  const url = new URL(base);
-  url.pathname = "/vnc.html";
+  const gateway = new URL(getGatewayOrigin());
+  const url = new URL("/vnc.html", gateway);
 
   const params = new URLSearchParams({
-    host: url.hostname,
-    port: profile.port.trim() || url.port || "6901",
+    host: gateway.hostname,
+    port:
+      gateway.port || (gateway.protocol === "https:" ? "443" : "80"),
     autoconnect: "1",
     resize: "remote",
-    path: "websockify",
+    path: `?token=${profile.token}`,
   });
-
-  if (profile.password.trim()) {
-    params.set("password", profile.password.trim());
-  }
 
   url.search = params.toString();
   return url.toString();
 }
 
 export function getConnectionSubtitle(profile: ConnectionProfile) {
-  return `${sanitizeGatewayHost(profile.host)}:${profile.port || "6901"}`;
+  return `${profile.host}:${profile.port || "5900"}`;
 }

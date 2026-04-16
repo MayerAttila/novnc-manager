@@ -3,33 +3,29 @@
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   buildLaunchUrl,
-  createProfileId,
-  DEFAULT_PROFILES,
-  getConnectionSubtitle,
-  STORAGE_KEY,
+  createDevicePayload,
+  LAST_OPENED_STORAGE_KEY,
   type ConnectionProfile,
 } from "@/lib/novnc";
 
 type DraftProfile = {
-  id?: string;
+  token?: string;
   name: string;
   host: string;
   port: string;
-  password: string;
   notes: string;
 };
 
 const EMPTY_DRAFT: DraftProfile = {
   name: "",
-  host: "192.168.0.104:6901",
-  port: "6901",
-  password: "",
+  host: "",
+  port: "5900",
   notes: "",
 };
 
 function formatRelativeTime(input?: string) {
   if (!input) {
-    return "Never opened";
+    return "Not opened yet";
   }
 
   const date = new Date(input);
@@ -54,24 +50,11 @@ function formatRelativeTime(input?: string) {
 
 function profileToDraft(profile: ConnectionProfile): DraftProfile {
   return {
-    id: profile.id,
+    token: profile.token,
     name: profile.name,
     host: profile.host,
     port: profile.port,
-    password: profile.password,
     notes: profile.notes,
-  };
-}
-
-function draftToProfile(draft: DraftProfile): ConnectionProfile {
-  return {
-    id: draft.id ?? createProfileId(),
-    name: draft.name.trim(),
-    host: draft.host.trim(),
-    port: draft.port.trim(),
-    password: draft.password.trim(),
-    notes: draft.notes.trim(),
-    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -80,39 +63,39 @@ function isValidDraft(draft: DraftProfile) {
 }
 
 export function NoVncConnectionManager() {
-  const [profiles, setProfiles] = useState<ConnectionProfile[]>(DEFAULT_PROFILES);
+  const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
+  const [lastOpenedMap, setLastOpenedMap] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<DraftProfile>(EMPTY_DRAFT);
   const [search, setSearch] = useState("");
-  const [hydrated, setHydrated] = useState(false);
-  const [statusMessage, setStatusMessage] = useState(
-    "Everything saves locally in this browser.",
-  );
+  const [statusMessage, setStatusMessage] = useState("");
+  const [statusTone, setStatusTone] = useState<"neutral" | "error">("neutral");
   const [modalMode, setModalMode] = useState<"add" | "edit" | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const importRef = useRef<HTMLInputElement>(null);
   const deferredSearch = useDeferredValue(search);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(LAST_OPENED_STORAGE_KEY);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as ConnectionProfile[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setProfiles(parsed);
+        const parsed = JSON.parse(raw) as Record<string, string>;
+        if (parsed && typeof parsed === "object") {
+          setLastOpenedMap(parsed);
         }
       } catch {
-        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem(LAST_OPENED_STORAGE_KEY);
       }
     }
-    setHydrated(true);
+
+    void fetchProfiles();
   }, []);
 
   useEffect(() => {
-    if (!hydrated) {
-      return;
-    }
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
-  }, [hydrated, profiles]);
+    window.localStorage.setItem(
+      LAST_OPENED_STORAGE_KEY,
+      JSON.stringify(lastOpenedMap),
+    );
+  }, [lastOpenedMap]);
 
   useEffect(() => {
     if (!modalMode) {
@@ -129,11 +112,11 @@ export function NoVncConnectionManager() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [modalMode]);
 
-  const filteredProfiles = [...profiles]
-    .sort(
-      (left, right) =>
-        new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-    )
+  const filteredProfiles = profiles
+    .map((profile) => ({
+      ...profile,
+      lastOpenedAt: lastOpenedMap[profile.token] || profile.lastOpenedAt,
+    }))
     .filter((profile) => {
       const query = deferredSearch.trim().toLowerCase();
       if (!query) {
@@ -142,6 +125,7 @@ export function NoVncConnectionManager() {
 
       const haystack = [
         profile.name,
+        profile.token,
         profile.host,
         profile.port,
         profile.notes,
@@ -150,7 +134,36 @@ export function NoVncConnectionManager() {
         .toLowerCase();
 
       return haystack.includes(query);
-    });
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+
+  async function fetchProfiles() {
+    try {
+      setIsLoading(true);
+      const response = await fetch("/api/devices", { cache: "no-store" });
+      const body = (await response.json().catch(() => null)) as
+        | ConnectionProfile[]
+        | { error?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(
+          (body as { error?: string } | null)?.error || "Failed to load devices.",
+        );
+      }
+
+      setProfiles(Array.isArray(body) ? body : []);
+      setStatusMessage("");
+      setStatusTone("neutral");
+    } catch (error) {
+      setStatusTone("error");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Failed to load devices.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   function setDraftField<Key extends keyof DraftProfile>(
     key: Key,
@@ -162,13 +175,11 @@ export function NoVncConnectionManager() {
   function openAddModal() {
     setDraft(EMPTY_DRAFT);
     setModalMode("add");
-    setStatusMessage("Creating a new connection.");
   }
 
   function openEditModal(profile: ConnectionProfile) {
     setDraft(profileToDraft(profile));
     setModalMode("edit");
-    setStatusMessage(`Editing ${profile.name}.`);
   }
 
   function closeModal() {
@@ -176,48 +187,93 @@ export function NoVncConnectionManager() {
     setDraft(EMPTY_DRAFT);
   }
 
-  function saveDraft() {
+  async function saveDraft() {
     if (!isValidDraft(draft)) {
-      setStatusMessage("Fill name, host, and port before saving.");
+      setStatusTone("error");
+      setStatusMessage("Fill display name, target host, and target port first.");
       return;
     }
 
-    const nextProfile = draftToProfile(draft);
+    try {
+      const payload = createDevicePayload({
+        name: draft.name,
+        host: draft.host,
+        port: draft.port,
+        notes: draft.notes,
+      });
 
-    setProfiles((current) => {
-      const existing = current.some((profile) => profile.id === nextProfile.id);
-      if (!existing) {
-        return [nextProfile, ...current];
+      const response = await fetch(
+        draft.token ? `/api/devices/${encodeURIComponent(draft.token)}` : "/api/devices",
+        {
+          method: draft.token ? "PUT" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      const body = (await response.json().catch(() => null)) as
+        | ConnectionProfile
+        | { error?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(
+          (body as { error?: string } | null)?.error ||
+            "Failed to save device.",
+        );
       }
 
-      return current.map((profile) =>
-        profile.id === nextProfile.id
-          ? { ...nextProfile, lastOpenedAt: profile.lastOpenedAt }
-          : profile,
+      await fetchProfiles();
+      closeModal();
+    } catch (error) {
+      setStatusTone("error");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Failed to save device.",
       );
-    });
-
-    setStatusMessage(draft.id ? "Connection updated." : "Connection created.");
-    closeModal();
+    }
   }
 
-  function removeProfile(id: string) {
-    setProfiles((current) => current.filter((profile) => profile.id !== id));
-    setStatusMessage("Connection removed.");
+  async function removeProfile(token: string) {
+    try {
+      const response = await fetch(`/api/devices/${encodeURIComponent(token)}`, {
+        method: "DELETE",
+      });
+
+      const body = (await response.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(body?.error || "Failed to remove device.");
+      }
+
+      setProfiles((current) => current.filter((profile) => profile.token !== token));
+      setLastOpenedMap((current) => {
+        const next = { ...current };
+        delete next[token];
+        return next;
+      });
+      setStatusMessage("");
+      setStatusTone("neutral");
+    } catch (error) {
+      setStatusTone("error");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Failed to remove device.",
+      );
+    }
   }
 
-  function markOpened(id: string) {
-    setProfiles((current) =>
-      current.map((profile) =>
-        profile.id === id
-          ? { ...profile, lastOpenedAt: new Date().toISOString() }
-          : profile,
-      ),
-    );
+  function markOpened(token: string) {
+    setLastOpenedMap((current) => ({
+      ...current,
+      [token]: new Date().toISOString(),
+    }));
   }
 
   function openProfile(profile: ConnectionProfile) {
-    markOpened(profile.id);
+    markOpened(profile.token);
     window.open(buildLaunchUrl(profile), "_blank", "noopener,noreferrer");
   }
 
@@ -228,10 +284,9 @@ export function NoVncConnectionManager() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "novnc-connections.json";
+    anchor.download = "novnc-devices.json";
     anchor.click();
     URL.revokeObjectURL(url);
-    setStatusMessage("Connections exported.");
   }
 
   async function importProfiles(event: React.ChangeEvent<HTMLInputElement>) {
@@ -242,17 +297,50 @@ export function NoVncConnectionManager() {
 
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as ConnectionProfile[];
+      const parsed = JSON.parse(text) as
+        | Array<{
+            name?: string;
+            host?: string;
+            port?: string | number;
+            notes?: string;
+            note?: string;
+          }>
+        | undefined;
+
       if (!Array.isArray(parsed) || parsed.length === 0) {
         throw new Error("Imported file is empty or invalid.");
       }
 
-      setProfiles(parsed);
-      setStatusMessage("Connections imported.");
+      for (const item of parsed) {
+        const payload = createDevicePayload({
+          name: item.name || "",
+          host: item.host || "",
+          port: String(item.port || "5900"),
+          notes: item.notes || item.note || "",
+        });
+
+        const response = await fetch("/api/devices", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          const body = (await response.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(body?.error || `Failed to import ${payload.name}.`);
+        }
+      }
+
+      await fetchProfiles();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to import connections.";
-      setStatusMessage(message);
+      setStatusTone("error");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Failed to import devices.",
+      );
     } finally {
       event.target.value = "";
     }
@@ -314,78 +402,100 @@ export function NoVncConnectionManager() {
                 className="w-full rounded-full border border-[var(--border)] bg-[var(--surface-strong)] py-2 pl-10 pr-4 text-sm text-[var(--foreground-secondary)] shadow-sm outline-none transition focus:border-[var(--accent)] placeholder:text-[var(--muted)]"
               />
             </div>
+
+            {statusMessage ? (
+              <div
+                className={`rounded-lg border px-4 py-3 text-sm ${
+                  statusTone === "error"
+                    ? "border-red-500/30 bg-red-500/10 text-red-200"
+                    : "border-[var(--border)] bg-[var(--background)] text-[var(--muted)]"
+                }`}
+              >
+                {statusMessage}
+              </div>
+            ) : null}
           </div>
 
           <div className="grid gap-4">
-            {filteredProfiles.length === 0 ? (
+            {isLoading ? (
+              <div className="rounded-[18px] border border-dashed border-[var(--border-strong)] bg-[var(--background)] p-8 text-center text-[var(--muted)]">
+                Loading devices...
+              </div>
+            ) : null}
+
+            {!isLoading && filteredProfiles.length === 0 ? (
               <div className="rounded-[18px] border border-dashed border-[var(--border-strong)] bg-[var(--background)] p-8 text-center text-[var(--muted)]">
                 No matching connections. Clear the search or add a new one.
               </div>
             ) : null}
 
-            {filteredProfiles.map((profile) => (
-              <article
-                key={profile.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => openProfile(profile)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    openProfile(profile);
-                  }
-                }}
-                className="cursor-pointer rounded-[18px] border border-[var(--border)] bg-[var(--background)] p-5 transition hover:border-[var(--border-strong)] hover:bg-[var(--surface-elevated)] focus:outline-none focus-visible:border-[var(--accent)]"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-xl font-semibold text-[var(--foreground)]">
-                      {profile.name}
-                    </h3>
-                    <p className="mt-2 text-sm leading-6 text-[var(--foreground-secondary)]">
-                      {profile.notes || "No notes yet."}
-                    </p>
+            {!isLoading &&
+              filteredProfiles.map((profile) => (
+                <article
+                  key={profile.token}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openProfile(profile)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openProfile(profile);
+                    }
+                  }}
+                  className="cursor-pointer rounded-[18px] border border-[var(--border)] bg-[var(--background)] p-5 transition hover:border-[var(--border-strong)] hover:bg-[var(--surface-elevated)] focus:outline-none focus-visible:border-[var(--accent)]"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-xl font-semibold text-[var(--foreground)]">
+                        {profile.name}
+                      </h3>
+                      <p className="mt-2 text-sm leading-6 text-[var(--foreground-secondary)]">
+                        {profile.notes || "No notes yet."}
+                      </p>
 
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <span className="rounded-full bg-[var(--surface)] px-3 py-1 font-mono text-xs text-[var(--foreground-secondary)]">
-                        {profile.host}
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <span className="rounded-full bg-[var(--surface)] px-3 py-1 font-mono text-xs text-[var(--foreground-secondary)]">
+                          {profile.host}
+                        </span>
+                        <span className="rounded-full bg-[var(--surface)] px-3 py-1 font-mono text-xs text-[var(--foreground-secondary)]">
+                          Port {profile.port}
+                        </span>
+                        <span className="rounded-full bg-[var(--surface)] px-3 py-1 font-mono text-xs text-[var(--muted)]">
+                          Token {profile.token}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-end gap-3">
+                      <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
+                        {formatRelativeTime(profile.lastOpenedAt)}
                       </span>
-                      <span className="rounded-full bg-[var(--surface)] px-3 py-1 font-mono text-xs text-[var(--foreground-secondary)]">
-                        Port {profile.port}
-                      </span>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEditModal(profile);
+                          }}
+                          className={secondaryButtonClassName}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void removeProfile(profile.token);
+                          }}
+                          className={dangerButtonClassName}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="flex flex-col items-end gap-3">
-                    <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                      {formatRelativeTime(profile.lastOpenedAt)}
-                    </span>
-                    <div className="flex flex-wrap justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openEditModal(profile);
-                        }}
-                        className={secondaryButtonClassName}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removeProfile(profile.id);
-                        }}
-                        className={dangerButtonClassName}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              ))}
           </div>
         </section>
       </main>
@@ -402,7 +512,7 @@ export function NoVncConnectionManager() {
                   {modalMode === "edit" ? "Edit Connection" : "Add Connection"}
                 </h2>
                 <p className="mt-2 text-sm text-[var(--muted)]">
-                  Basic setup only. Name it, point it to the gateway, and save.
+                  This writes directly to the hosted noVNC device list.
                 </p>
               </div>
               <button
@@ -415,7 +525,7 @@ export function NoVncConnectionManager() {
             </div>
 
             <div className="space-y-5">
-              <Field label="Name" required>
+              <Field label="Display Name" required>
                 <input
                   value={draft.name}
                   onChange={(event) => setDraftField("name", event.target.value)}
@@ -425,40 +535,31 @@ export function NoVncConnectionManager() {
               </Field>
 
               <div className="grid gap-5 md:grid-cols-2">
-                <Field label="Gateway Host" required>
+                <Field label="Target Host / IP" required>
                   <input
                     value={draft.host}
                     onChange={(event) => setDraftField("host", event.target.value)}
-                    placeholder="192.168.0.104:6901"
+                    placeholder="192.168.1.62"
                     className={inputClassName}
                   />
                 </Field>
 
-                <Field label="Port" required>
+                <Field label="Target Port" required>
                   <input
                     value={draft.port}
                     onChange={(event) => setDraftField("port", event.target.value)}
-                    placeholder="6901"
+                    placeholder="5900"
                     className={inputClassName}
                   />
                 </Field>
               </div>
-
-              <Field label="Password">
-                <input
-                  value={draft.password}
-                  onChange={(event) => setDraftField("password", event.target.value)}
-                  placeholder="Optional noVNC password"
-                  className={inputClassName}
-                />
-              </Field>
 
               <Field label="Notes">
                 <textarea
                   value={draft.notes}
                   onChange={(event) => setDraftField("notes", event.target.value)}
                   rows={3}
-                  placeholder="Optional notes for this connection"
+                  placeholder="Optional note for this device"
                   className={`${inputClassName} resize-none`}
                 />
               </Field>
@@ -466,7 +567,7 @@ export function NoVncConnectionManager() {
               <div className="flex flex-wrap gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={saveDraft}
+                  onClick={() => void saveDraft()}
                   className={primaryButtonClassName}
                 >
                   {modalMode === "edit" ? "Save Changes" : "Create Connection"}
@@ -505,7 +606,9 @@ function Field({
         {required ? <span className="text-[var(--accent)]">Required</span> : null}
       </span>
       {children}
-      {hint ? <p className="mt-2 text-xs leading-5 text-[var(--muted)]">{hint}</p> : null}
+      {hint ? (
+        <p className="mt-2 text-xs leading-5 text-[var(--muted)]">{hint}</p>
+      ) : null}
     </label>
   );
 }
