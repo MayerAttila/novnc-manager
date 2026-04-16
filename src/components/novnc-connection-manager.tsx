@@ -270,10 +270,6 @@ export function NoVncConnectionManager() {
               <h2 className="mt-2 text-2xl font-semibold text-[var(--foreground)]">
                 Saved Connections
               </h2>
-              <p className="mt-2 text-sm text-[var(--muted)]">
-                {filteredProfiles.length} visible connection
-                {filteredProfiles.length === 1 ? "" : "s"}.
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -318,7 +314,6 @@ export function NoVncConnectionManager() {
                 className="w-full rounded-full border border-[var(--border)] bg-[var(--surface-strong)] py-2 pl-10 pr-4 text-sm text-[var(--foreground-secondary)] shadow-sm outline-none transition focus:border-[var(--accent)] placeholder:text-[var(--muted)]"
               />
             </div>
-            <p className="text-sm leading-6 text-[var(--muted)]">{statusMessage}</p>
           </div>
 
           <div className="grid gap-4">
@@ -331,18 +326,22 @@ export function NoVncConnectionManager() {
             {filteredProfiles.map((profile) => (
               <article
                 key={profile.id}
-                className="rounded-[18px] border border-[var(--border)] bg-[var(--background)] p-5 transition hover:border-[var(--border-strong)] hover:bg-[var(--surface-elevated)]"
+                role="button"
+                tabIndex={0}
+                onClick={() => openProfile(profile)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openProfile(profile);
+                  }
+                }}
+                className="cursor-pointer rounded-[18px] border border-[var(--border)] bg-[var(--background)] p-5 transition hover:border-[var(--border-strong)] hover:bg-[var(--surface-elevated)] focus:outline-none focus-visible:border-[var(--accent)]"
               >
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-xl font-semibold text-[var(--foreground)]">
-                        {profile.name}
-                      </h3>
-                      <span className="rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
-                        Connection
-                      </span>
-                    </div>
+                    <h3 className="text-xl font-semibold text-[var(--foreground)]">
+                      {profile.name}
+                    </h3>
                     <p className="mt-2 text-sm leading-6 text-[var(--foreground-secondary)]">
                       {profile.notes || "No notes yet."}
                     </p>
@@ -364,21 +363,20 @@ export function NoVncConnectionManager() {
                     <div className="flex flex-wrap justify-end gap-2">
                       <button
                         type="button"
-                        onClick={() => openProfile(profile)}
-                        className={primaryButtonClassName}
-                      >
-                        Open
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openEditModal(profile)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditModal(profile);
+                        }}
                         className={secondaryButtonClassName}
                       >
                         Edit
                       </button>
                       <button
                         type="button"
-                        onClick={() => removeProfile(profile.id)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          removeProfile(profile.id);
+                        }}
                         className={dangerButtonClassName}
                       >
                         Delete
