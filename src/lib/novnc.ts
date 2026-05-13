@@ -20,6 +20,8 @@ export const LAST_OPENED_STORAGE_KEY = "novnc-manager.last-opened.v1";
 
 export const DEFAULT_GATEWAY_ORIGIN =
   process.env.NEXT_PUBLIC_NOVNC_GATEWAY_ORIGIN || "http://192.168.0.104:6901";
+const DEFAULT_GATEWAY_PORT = "6901";
+const APP_PORTS = new Set(["3000", "6903"]);
 
 export function toConnectionProfile(input: {
   name: string;
@@ -65,14 +67,26 @@ function withProtocol(url: string) {
 }
 
 export function getGatewayOrigin() {
-  if (
-    typeof window !== "undefined" &&
-    !process.env.NEXT_PUBLIC_NOVNC_GATEWAY_ORIGIN
-  ) {
-    return window.location.origin;
+  const configuredOrigin = withProtocol(DEFAULT_GATEWAY_ORIGIN);
+
+  if (process.env.NEXT_PUBLIC_NOVNC_GATEWAY_ORIGIN) {
+    return configuredOrigin;
   }
 
-  return withProtocol(DEFAULT_GATEWAY_ORIGIN);
+  if (typeof window !== "undefined") {
+    const currentOrigin = new URL(window.location.origin);
+
+    if (!currentOrigin.port || currentOrigin.port === DEFAULT_GATEWAY_PORT) {
+      return currentOrigin.origin;
+    }
+
+    if (APP_PORTS.has(currentOrigin.port)) {
+      currentOrigin.port = DEFAULT_GATEWAY_PORT;
+      return currentOrigin.origin;
+    }
+  }
+
+  return configuredOrigin;
 }
 
 export function buildLaunchUrl(profile: ConnectionProfile) {
